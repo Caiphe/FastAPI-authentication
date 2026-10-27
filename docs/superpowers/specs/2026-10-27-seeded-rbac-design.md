@@ -128,6 +128,12 @@ be reused within one request, but they must not be cached across requests. Conse
 assignment or removal applies to the user's next request, including requests made with an already
 issued access token.
 
+A guard that needs one permission should use a targeted indexed `EXISTS` query rather than loading
+and materializing every role and permission. Endpoints that return roles or effective permissions
+may load the complete set with an explicit join or eager-loading strategy. Collection relationships
+that could otherwise trigger implicit per-row SQL should use `lazy="raise"` where practical, so an
+unplanned lazy load fails during development and tests instead of becoming an N+1 query.
+
 Unauthenticated requests return the existing `401` responses. Authenticated requests without a
 required permission return HTTP `403` in the shared error envelope:
 
@@ -214,6 +220,11 @@ Tests will cover:
 - direct and unioned permissions across one or multiple roles;
 - immediate grant and revocation effects while reusing an existing access token;
 - current-user roles and effective permissions without internal audit fields;
+- SQL query-count regression checks for permission guards, `/users/me`, role catalog, user list,
+  and user detail operations. Tests compare small and large result sets and require query counts to
+  remain constant rather than grow with users, roles, or permissions;
+- `lazy="raise"` coverage or equivalent safeguards proving response serialization cannot trigger
+  implicit relationship queries;
 - every administration endpoint's success, `401`, `403`, `404`, `409`, validation, pagination,
   search, deterministic ordering, and idempotency behavior;
 - concurrent attempts to remove the last administrator;

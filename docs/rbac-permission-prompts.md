@@ -92,6 +92,8 @@ Scope:
    - idempotent role assignment and removal;
    - counting active, verified administrators;
    - locking the seeded admin role row before last-administrator checks.
+   Permission checks for a single key should use a targeted indexed EXISTS query. Queries that
+   return collections must use explicit joins or eager loading and must not issue per-row SQL.
 2. Add app/rbac/exceptions.py with application errors for permission denial, missing users, missing
    roles, ineligible administrator targets, and last-administrator removal. Use the shared error
    envelope conventions and the status codes approved in the design.
@@ -108,17 +110,25 @@ Scope:
    deterministic ordering, pagination/search, idempotency, eligibility, transaction rollback, and
    last-admin protection. Add a concurrent-removal test if it fits cleanly here; otherwise leave a
    clearly named test for Prompt 5, not a TODO comment.
+8. Configure RBAC collection relationships with lazy="raise" where practical. Start
+   tests/test_query_counts.py with a reusable SQLAlchemy query-count helper based on
+   before_cursor_execute. At repository/service level, compare representative operations with one
+   record versus at least 50 records and assert SELECT counts remain constant. Count only
+   statements executed inside the measured operation, always remove the event listener in a
+   finally block, and add a small documented ceiling where stable.
 
 Do not add HTTP routes, FastAPI dependencies, CLI parsing, or README changes in this prompt.
 
 Verification:
-- python -m pytest tests/test_rbac_repository.py tests/test_rbac_service.py
+- python -m pytest tests/test_rbac_repository.py tests/test_rbac_service.py tests/test_query_counts.py
 - python -m ruff check app/rbac tests/test_rbac_repository.py tests/test_rbac_service.py
 - python -m mypy
 
 Completion criteria:
 - Business rules have one service implementation reusable by HTTP and CLI.
 - Effective permissions are queried from PostgreSQL and are not token claims or process caches.
+- Permission and collection query counts do not grow with role, permission, or user cardinality.
+- Unplanned relationship lazy loads fail instead of silently issuing SQL.
 - Idempotent mutations and last-admin safety are covered by tests.
 - Focused tests and static checks pass.
 ```
@@ -210,6 +220,11 @@ Scope:
 7. Add endpoint tests for successful responses, exact response shape, sorting, pagination, search,
    empty results, 401, 403, 404, and 422. Verify a user with only one required permission can call
    the relevant endpoint without having an admin-name special case.
+8. Expand the shared query-count tests to exercise HTTP requests with realistic fixtures. Compare
+   one versus at least 50 users for /admin/users, one versus many role-permission mappings for
+   /admin/roles and /users/me, and one versus many assigned roles for /admin/users/{user_id}.
+   Assert SELECT counts stay constant and response serialization performs no hidden lazy loads.
+   Keep the main assertion about growth; use exact ceilings only when they are stable and explained.
 
 Do not add assignment endpoints or CLI commands in this prompt.
 
@@ -221,6 +236,7 @@ Verification:
 Completion criteria:
 - All four read endpoints match the approved routes and permissions.
 - Responses are deterministic, paginated where specified, and free of sensitive/audit fields.
+- Query counts remain bounded independently of returned or assigned collection size.
 - Permission checks are capability-based, not role-name checks.
 - Focused tests and static checks pass.
 ```
@@ -396,13 +412,17 @@ Review checklist:
    foreign-key behavior, and uniqueness constraints.
 8. Confirm logs, errors, CLI output, and test failures do not reveal secrets, tokens, password
    hashes, connection credentials, or internal audit fields.
-9. Remove dead code and accidental duplication introduced by the implementation. Do not perform
+9. Run the query-count regression tests and inspect their captured SQL. Confirm permission guards
+   use a targeted EXISTS query, list/detail query counts stay constant between small and large
+   fixtures, and no response serialization triggers relationship lazy loads.
+10. Remove dead code and accidental duplication introduced by the implementation. Do not perform
    unrelated refactors.
 
 Run the complete verification suite with PostgreSQL and Redis available:
 - docker compose up -d --wait
 - python -m alembic upgrade head
 - python -m pytest
+- python -m pytest tests/test_query_counts.py
 - python -m ruff format --check .
 - python -m ruff check .
 - python -m mypy
