@@ -213,7 +213,16 @@ EXPECTED_OPERATIONS = {
     ("post", "/api/v1/auth/forgot-password"),
     ("post", "/api/v1/auth/reset-password"),
     ("get", "/api/v1/users/me"),
+    ("get", "/api/v1/admin/permissions"),
+    ("get", "/api/v1/admin/roles"),
+    ("get", "/api/v1/admin/users"),
+    ("get", "/api/v1/admin/users/{user_id}"),
+    ("put", "/api/v1/admin/users/{user_id}/roles/{role_name}"),
+    ("delete", "/api/v1/admin/users/{user_id}/roles/{role_name}"),
 }
+# Account state visible only to administrators, never in self-service schemas.
+ADMIN_ONLY_FIELDS = {"is_active"}
+ADMIN_SCHEMAS = {"AdminUserResponse"}
 INTERNAL_FIELDS = {
     "hashed_password",
     "token_hash",
@@ -221,10 +230,11 @@ INTERNAL_FIELDS = {
     "replaced_by_id",
     "used_at",
     "revoked_at",
-    "is_active",
     "updated_at",
     "user_id",
     "refresh_token",
+    "assigned_by_user_id",
+    "assigned_at",
 }
 
 
@@ -241,13 +251,17 @@ def test_openapi_exposes_exactly_the_intended_operations(openapi: dict[str, Any]
 
 
 def test_openapi_schemas_do_not_leak_internal_fields(openapi: dict[str, Any]) -> None:
-    properties = {
+    schemas = openapi["components"]["schemas"]
+    properties = {name for schema in schemas.values() for name in schema.get("properties", {})}
+    non_admin_properties = {
         name
-        for schema in openapi["components"]["schemas"].values()
+        for schema_name, schema in schemas.items()
+        if schema_name not in ADMIN_SCHEMAS
         for name in schema.get("properties", {})
     }
 
     assert properties.isdisjoint(INTERNAL_FIELDS)
+    assert non_admin_properties.isdisjoint(ADMIN_ONLY_FIELDS)
     assert set(openapi["components"]["schemas"]["UserResponse"]["properties"]) == {
         "id",
         "email",
@@ -283,6 +297,14 @@ def test_openapi_marks_secrets_as_password_fields(openapi: dict[str, Any]) -> No
 
 def test_openapi_protects_current_user_with_bearer_auth(openapi: dict[str, Any]) -> None:
     assert openapi["paths"]["/api/v1/users/me"]["get"]["security"] == [{"HTTPBearer": []}]
+
+
+def test_openapi_protects_administration_with_bearer_auth(openapi: dict[str, Any]) -> None:
+    for path, item in openapi["paths"].items():
+        if path.startswith("/api/v1/admin/"):
+            for method, operation in item.items():
+                assert operation["security"] == [{"HTTPBearer": []}], (method, path)
+                assert {"401", "403"} <= set(operation["responses"]), (method, path)
 
 
 # Error consistency

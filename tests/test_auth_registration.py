@@ -4,12 +4,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.models import ActionToken, ActionTokenPurpose
 from app.core.security import generate_opaque_token, hash_opaque_token, verify_password
+from app.rbac.models import Role, UserRole
 from app.users import repository as user_repository
 from app.users.models import User
 from tests.conftest import FakeDispatcher
@@ -77,6 +78,36 @@ def test_register_creates_unverified_user_and_queues_email_after_commit(
     assert token.used_at is None
     lifetime = token.expires_at - datetime.now(UTC)
     assert timedelta(hours=23, minutes=59) < lifetime <= timedelta(hours=24)
+
+
+def test_register_assigns_the_default_user_role(client: TestClient, db_session: Session) -> None:
+    register(client)
+
+    user = user_by_email(db_session, "jane@example.com")
+    [assignment] = db_session.scalars(select(UserRole).where(UserRole.user_id == user.id)).all()
+    assert assignment.role.name == "user"
+    assert assignment.assigned_by_user_id is None
+
+
+def test_register_rolls_back_everything_when_default_role_is_missing(
+    client: TestClient, db_session: Session, dispatcher: FakeDispatcher
+) -> None:
+    db_session.execute(delete(Role).where(Role.name == "user"))
+    db_session.commit()
+
+    response = client.post(REGISTER, json={"email": "jane@example.com", "password": PASSWORD})
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "configuration_error",
+            "message": "The service is not configured correctly.",
+            "details": None,
+        }
+    }
+    db_session.expire_all()
+    assert db_session.scalars(select(User).where(User.email == "jane@example.com")).all() == []
+    assert dispatcher.queued == []
 
 
 @pytest.mark.parametrize("password_length", [12, 128])

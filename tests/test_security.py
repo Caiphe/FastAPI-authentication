@@ -78,6 +78,16 @@ def test_access_token_contains_required_claims_and_default_lifetime() -> None:
     assert claims.exp - claims.iat == timedelta(minutes=15)
 
 
+def test_access_token_carries_only_identity_claims() -> None:
+    settings = security_settings()
+    token = create_access_token(uuid4(), settings=settings)
+
+    payload = jwt.decode(token, options={"verify_signature": False})
+
+    # Authorization is resolved from the database; tokens never carry roles.
+    assert set(payload) == {"sub", "iat", "exp", "jti"}
+
+
 def test_expired_access_token_is_rejected() -> None:
     settings = security_settings()
     token = create_access_token(

@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, inspect
 from sqlalchemy.exc import OperationalError
 
+from app import cli
 from app.core import database
 from app.core.config import Settings
 from app.main import create_app
@@ -120,8 +121,7 @@ def link_token(message: Message) -> str:
     return match.group(1)
 
 
-@pytest.fixture
-def email() -> Iterator[str]:
+def unique_address() -> Iterator[str]:
     address = f"e2e-{uuid4().hex}@example.com"
     yield address
     with database.SessionFactory() as session:
@@ -129,8 +129,18 @@ def email() -> Iterator[str]:
         session.commit()
 
 
+@pytest.fixture
+def email() -> Iterator[str]:
+    yield from unique_address()
+
+
+@pytest.fixture
+def member_email() -> Iterator[str]:
+    yield from unique_address()
+
+
 def test_complete_account_lifecycle_through_real_worker(
-    worker: Path, settings: Settings, email: str
+    worker: Path, settings: Settings, email: str, member_email: str
 ) -> None:
     with TestClient(create_app(settings), base_url="https://testserver") as client:
         credentials = {"email": email, "password": PASSWORD}
@@ -154,7 +164,10 @@ def test_complete_account_lifecycle_through_real_worker(
         login = client.post("/api/v1/auth/login", json=credentials)
         assert login.status_code == 200
         bearer = {"Authorization": f"Bearer {login.json()['access_token']}"}
-        assert client.get("/api/v1/users/me", headers=bearer).json()["is_verified"] is True
+        me = client.get("/api/v1/users/me", headers=bearer).json()
+        assert me["is_verified"] is True
+        # Registration granted the default role.
+        assert (me["roles"], me["effective_permissions"]) == (["user"], ["profile:read"])
         refreshed = client.post("/api/v1/auth/refresh")
         assert refreshed.status_code == 200
         assert client.post("/api/v1/auth/logout").status_code == 204
@@ -181,3 +194,55 @@ def test_complete_account_lifecycle_through_real_worker(
             ).status_code
             == 200
         )
+
+        administer_roles(client, worker, email, member_email)
+
+
+def administer_roles(client: TestClient, outbox: Path, admin_email: str, member_email: str) -> None:
+    """Bootstrap an administrator with the CLI, then manage another account's roles."""
+    login = client.post("/api/v1/auth/login", json={"email": admin_email, "password": NEW_PASSWORD})
+    admin = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/admin/roles", headers=admin).status_code == 403
+
+    # The bootstrap command applies to the token the user already holds.
+    assert cli.main(["grant-role", "--email", admin_email, "--role", "admin"]) == 0
+    me = client.get("/api/v1/users/me", headers=admin).json()
+    assert me["roles"] == ["admin", "user"]
+    assert me["effective_permissions"] == [
+        "profile:read",
+        "roles:assign",
+        "roles:read",
+        "users:read",
+    ]
+
+    # Catalog and user administration.
+    permissions = client.get("/api/v1/admin/permissions", headers=admin)
+    assert [p["key"] for p in permissions.json()] == me["effective_permissions"]
+    roles = client.get("/api/v1/admin/roles", headers=admin).json()
+    assert [role["name"] for role in roles] == ["admin", "user"]
+    found = client.get(
+        "/api/v1/admin/users", params={"email": admin_email.upper()}, headers=admin
+    ).json()
+    assert found["total"] == 1
+    assert found["items"][0]["roles"] == ["admin", "user"]
+
+    # A second, verified account.
+    member_credentials = {"email": member_email, "password": PASSWORD}
+    assert client.post("/api/v1/auth/register", json=member_credentials).status_code == 201
+    verification = wait_for_email(outbox, member_email, "Verify your email address")
+    verified = client.post("/api/v1/auth/verify-email", json={"token": link_token(verification)})
+    assert verified.status_code == 200
+    member_login = client.post("/api/v1/auth/login", json=member_credentials)
+    member = {"Authorization": f"Bearer {member_login.json()['access_token']}"}
+    member_id = client.get("/api/v1/users/me", headers=member).json()["id"]
+    detail = client.get(f"/api/v1/admin/users/{member_id}", headers=admin).json()
+    assert (detail["email"], detail["roles"]) == (member_email, ["user"])
+    assert client.get("/api/v1/admin/users", headers=member).status_code == 403
+
+    # Grant and revoke take effect on the member's existing access token.
+    role_url = f"/api/v1/admin/users/{member_id}/roles/admin"
+    assert client.put(role_url, headers=admin).status_code == 204
+    assert client.get("/api/v1/admin/users", headers=member).status_code == 200
+    assert client.delete(role_url, headers=admin).status_code == 204
+    assert client.get("/api/v1/admin/users", headers=member).status_code == 403
+    assert client.get("/api/v1/users/me", headers=member).json()["roles"] == ["user"]

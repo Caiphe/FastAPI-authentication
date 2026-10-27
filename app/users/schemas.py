@@ -24,3 +24,10 @@ class UserResponse(BaseModel):
     email: str
     is_verified: bool
     created_at: datetime
+
+
+class CurrentUserResponse(UserResponse):
+    """The authenticated user's profile with their roles and effective permissions."""
+
+    roles: list[str]
+    effective_permissions: list[str]

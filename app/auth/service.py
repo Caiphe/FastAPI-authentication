@@ -36,6 +36,8 @@ from app.core.security import (
     verify_password,
 )
 from app.email.tasks import EmailDispatchError
+from app.rbac.exceptions import DefaultRoleMissingError
+from app.rbac.service import RbacService
 from app.users import repository as user_repository
 from app.users.models import User
 from app.users.schemas import normalize_email
@@ -68,7 +70,10 @@ class AuthService:
         self._dispatcher = dispatcher
 
     def register(self, email: str, password: str) -> User:
-        """Create an unverified account and queue its verification email."""
+        """Create an unverified account with the default role and queue its verification email.
+
+        The account, its role, and its verification token commit together or not at all.
+        """
         normalized_email = normalize_email(email)
         if user_repository.get_user_by_email(self._session, normalized_email) is not None:
             raise EmailAlreadyRegisteredError()
@@ -79,12 +84,16 @@ class AuthService:
                 email=normalized_email,
                 hashed_password=hash_password(password),
             )
+            RbacService(self._session).assign_default_role(user.id)
             token, raw_token = self._issue_verification_token(user)
             self._session.commit()
         except IntegrityError as error:
             # A concurrent registration won the unique constraint.
             self._session.rollback()
             raise EmailAlreadyRegisteredError() from error
+        except DefaultRoleMissingError:
+            self._session.rollback()
+            raise
 
         logger.info("User %s registered", user.id)
         try:

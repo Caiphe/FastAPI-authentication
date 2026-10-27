@@ -8,15 +8,20 @@ from uuid import UUID, uuid4
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, inspect
+from sqlalchemy import delete, inspect, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.auth.dispatch import get_email_dispatcher
 from app.core import database
 from app.core.config import Environment, Settings
+from app.core.security import create_access_token
 from app.email.tasks import EmailDispatchError
 from app.main import create_app
+from app.rbac import repository as rbac_repository
+from app.rbac.catalog import PermissionKey, RoleName
+from app.rbac.models import Role, UserRole
+from app.rbac.service import RbacService
 from app.users.models import User
 
 
@@ -154,3 +159,76 @@ def committed_client(make_app: Callable[..., FastAPI]) -> Iterator[tuple[TestCli
         with database.SessionFactory() as session:
             session.execute(delete(User).where(User.email == email))
             session.commit()
+
+
+def make_user(
+    session: Session,
+    email: str | None = None,
+    *,
+    roles: tuple[RoleName, ...] = (),
+    is_active: bool = True,
+    is_verified: bool = True,
+) -> User:
+    """Stage a user holding ``roles``. The password hash is a placeholder; mint tokens directly."""
+    user = User(
+        email=email or f"rbac-{uuid4().hex}@example.com",
+        hashed_password="hash",
+        is_active=is_active,
+        is_verified=is_verified,
+    )
+    session.add(user)
+    session.flush()
+    for name in roles:
+        role = rbac_repository.get_role_by_name(session, name)
+        assert role is not None
+        session.add(UserRole(user_id=user.id, role_id=role.id))
+    session.flush()
+    return user
+
+
+@pytest.fixture
+def committed_admins() -> Iterator[list[User]]:
+    """Two committed, active, verified administrators, deleted afterwards."""
+    tag = uuid4().hex
+    try:
+        with database.SessionFactory() as session:
+            users = [make_user(session, f"admin-{i}-{tag}@example.com") for i in range(2)]
+            service = RbacService(session)
+            for user in users:
+                service.grant_role(user.id, RoleName.ADMIN)
+    except OperationalError as error:
+        reason = str(error.orig).splitlines()[-1].strip()
+        pytest.skip(f"PostgreSQL is unavailable for integration tests: {reason}")
+    try:
+        yield users
+    finally:
+        with database.SessionFactory() as session:
+            session.execute(delete(User).where(User.email.contains(tag)))
+            session.commit()
+
+
+def bearer(settings: Settings, user: User) -> dict[str, str]:
+    """Authorization headers with a freshly minted access token for ``user``."""
+    return {"Authorization": f"Bearer {create_access_token(user.id, settings=settings)}"}
+
+
+def holder_of(session: Session, settings: Settings, permission: PermissionKey) -> dict[str, str]:
+    """Headers for a user whose only role grants exactly ``permission``, via a non-seeded role."""
+    [granted] = [p for p in rbac_repository.list_permissions(session) if p.key == permission]
+    role = Role(name=f"only-{uuid4().hex[:12]}", description="Test role", permissions=[granted])
+    session.add(role)
+    user = make_user(session)
+    session.flush()
+    session.add(UserRole(user_id=user.id, role_id=role.id))
+    session.flush()
+    return bearer(settings, user)
+
+
+def assignment(session: Session, user_id: UUID, role: str) -> UserRole | None:
+    """Re-read one role assignment from the database, bypassing the identity map."""
+    return session.scalars(
+        select(UserRole)
+        .join(Role)
+        .where(UserRole.user_id == user_id, Role.name == role)
+        .execution_options(populate_existing=True)
+    ).one_or_none()

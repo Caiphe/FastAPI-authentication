@@ -1,19 +1,34 @@
 """User HTTP endpoints."""
 
-from fastapi import APIRouter, status
+from typing import Annotated
 
-from app.auth.dependencies import CurrentUserDep
+from fastapi import APIRouter, Depends, status
+
 from app.core.exceptions import ErrorResponse
-from app.users.schemas import UserResponse
+from app.rbac.catalog import PermissionKey
+from app.rbac.dependencies import AuthorizationContext, require_permission
+from app.users.schemas import CurrentUserResponse, UserResponse
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+ProfileReaderDep = Annotated[
+    AuthorizationContext, Depends(require_permission(PermissionKey.PROFILE_READ))
+]
 
 
 @router.get(
     "/me",
-    response_model=UserResponse,
-    responses={status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse}},
+    response_model=CurrentUserResponse,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"model": ErrorResponse},
+        status.HTTP_403_FORBIDDEN: {"model": ErrorResponse},
+    },
 )
-def read_current_user(user: CurrentUserDep) -> UserResponse:
-    """Return the authenticated user's public profile."""
-    return UserResponse.model_validate(user)
+def read_current_user(context: ProfileReaderDep) -> CurrentUserResponse:
+    """Return the authenticated user's profile, roles, and effective permissions."""
+    profile = UserResponse.model_validate(context.user)
+    return CurrentUserResponse(
+        **profile.model_dump(),
+        roles=list(context.authorization.roles),
+        effective_permissions=list(context.authorization.permissions),
+    )

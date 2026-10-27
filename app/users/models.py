@@ -12,6 +12,7 @@ from app.core.database import Base, CreatedAtMixin, UpdatedAtMixin
 
 if TYPE_CHECKING:
     from app.auth.models import ActionToken, RefreshToken
+    from app.rbac.models import UserRole
 
 
 class User(CreatedAtMixin, UpdatedAtMixin, Base):
@@ -42,6 +43,13 @@ class User(CreatedAtMixin, UpdatedAtMixin, Base):
     )
     action_tokens: Mapped[list[ActionToken]] = relationship(
         back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    # user_roles references users twice; only the assignee side belongs here.
+    role_assignments: Mapped[list[UserRole]] = relationship(
+        back_populates="user",
+        foreign_keys="UserRole.user_id",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )

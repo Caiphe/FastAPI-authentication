@@ -9,11 +9,15 @@ from app import models
 from app.core import database
 
 
-def test_metadata_contains_authentication_tables() -> None:
+def test_metadata_contains_application_tables() -> None:
     configure_mappers()
     assert set(database.Base.metadata.tables) == {
         "action_tokens",
+        "permissions",
         "refresh_tokens",
+        "role_permissions",
+        "roles",
+        "user_roles",
         "users",
     }
     assert models.User.__tablename__ == "users"

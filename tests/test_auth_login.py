@@ -25,6 +25,7 @@ from app.core.security import (
 )
 from app.core.security import hash_password as real_hash_password
 from app.main import create_app
+from app.rbac.service import RbacService
 from app.users.models import User
 from tests.conftest import FakeDispatcher
 
@@ -64,6 +65,8 @@ def create_user(
     )
     session.add(user)
     session.flush()
+    # Registration grants this role; /users/me requires its permission.
+    RbacService(session).assign_default_role(user.id)
     return user
 
 
@@ -294,6 +297,8 @@ def test_me_returns_profile_for_valid_token(client: TestClient, verified_user: U
         "email": EMAIL,
         "is_verified": True,
         "created_at": verified_user.created_at.isoformat().replace("+00:00", "Z"),
+        "roles": ["user"],
+        "effective_permissions": ["profile:read"],
     }
 
 

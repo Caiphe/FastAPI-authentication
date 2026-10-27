@@ -21,6 +21,7 @@ from app.core import database
 from app.core.config import Settings
 from app.core.security import decode_access_token, generate_opaque_token, hash_opaque_token
 from app.core.security import hash_password as real_hash_password
+from app.rbac.service import RbacService
 from app.users.models import User
 from tests.conftest import FakeDispatcher
 
@@ -51,6 +52,8 @@ def user(db_session: Session, password_hash: str) -> User:
     account = User(email=EMAIL, hashed_password=password_hash, is_verified=True)
     db_session.add(account)
     db_session.flush()
+    # Registration grants this role; /users/me requires its permission.
+    RbacService(db_session).assign_default_role(account.id)
     return account
 
 

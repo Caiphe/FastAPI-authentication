@@ -4,11 +4,10 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
 
+import app.models  # noqa: F401  Register every model's metadata for autogenerate.
 from alembic import context
-from app.auth.models import ActionToken, RefreshToken  # noqa: F401
 from app.core.config import get_settings
 from app.core.database import Base
-from app.users.models import User  # noqa: F401
 
 config = context.config
 

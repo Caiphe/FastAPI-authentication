@@ -8,6 +8,7 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import register_middleware
+from app.rbac.routes import router as rbac_router
 from app.users.routes import router as users_router
 
 
@@ -34,6 +35,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     register_middleware(application, resolved_settings)
     application.include_router(auth_router, prefix=resolved_settings.api_v1_prefix)
     application.include_router(users_router, prefix=resolved_settings.api_v1_prefix)
+    application.include_router(rbac_router, prefix=resolved_settings.api_v1_prefix)
 
     @application.get("/health", response_model=HealthResponse, tags=["health"])
     def health() -> HealthResponse:
